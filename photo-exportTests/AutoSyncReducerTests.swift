@@ -324,6 +324,42 @@ struct AutoSyncReducerTests {
     #expect(effects.isEmpty)
   }
 
+  // MARK: - convertHEICOverwriteChanged
+
+  /// Enabling "Replace already-exported HEIC files" reschedules AutoSync at
+  /// the same 2s debounce as the other format toggles — stale-HEIC assets
+  /// become eligible for a rewrite run without a manual export.
+  @Test func convertHEICOverwriteChangeSchedulesDebounce() {
+    let state = enabledStateWithSafeDestinationAndScope()
+
+    let (next, effects) = AutoSyncReducer.reduce(
+      .convertHEICOverwriteChanged(true), in: state, now: now)
+
+    let fireAt = now.addingTimeInterval(2)
+    #expect(next.convertHEICOverwriteExisting == true)
+    #expect(next.current == .scheduled(reason: .convertHEICOverwriteChanged, fireAt: fireAt))
+    #expect(effects == [.scheduleDebounce(.convertHEICOverwriteChanged, fireAt: fireAt)])
+  }
+
+  /// Idempotent overwrite flips must not reschedule.
+  @Test func convertHEICOverwriteUnchangedIsNoOp() {
+    var state = enabledStateWithSafeDestinationAndScope()
+    state.convertHEICOverwriteExisting = true
+    state.current = .idle
+
+    let (next, effects) = AutoSyncReducer.reduce(
+      .convertHEICOverwriteChanged(true), in: state, now: now)
+
+    #expect(next.current == .idle)
+    #expect(effects.isEmpty)
+  }
+
+  /// The overwrite reason shares the 2s debounce bucket with the other
+  /// format toggles.
+  @Test func convertHEICOverwriteDebounceDelayIsTwoSeconds() {
+    #expect(AutoSyncReducer.debounceDelay(for: .convertHEICOverwriteChanged) == 2)
+  }
+
   // MARK: - debounceFired → running → idle
 
   @Test func debounceFiredFromScheduledStartsRun() {

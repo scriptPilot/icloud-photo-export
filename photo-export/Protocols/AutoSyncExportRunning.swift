@@ -23,6 +23,11 @@ protocol AutoSyncExportRunning: AnyObject {
   /// `requiredVariants` for HEIC originals.
   var convertHEICToJPEGPublisher: AnyPublisher<Bool, Never> { get }
 
+  /// Stream of the user's `Replace already-exported HEIC files` toggle.
+  /// AutoSync re-evaluates on flip because stale-HEIC assets become eligible
+  /// for a rewrite run when this joins the conversion toggle.
+  var convertHEICOverwriteExistingPublisher: AnyPublisher<Bool, Never> { get }
+
   /// Awaitable run entry point. Caller (typically AutoSyncManager) constructs the
   /// `ExportRunContext` (incl. UUID + startedAt) and awaits the terminal summary.
   func runExport(context: ExportRunContext) async -> ExportRunSummary

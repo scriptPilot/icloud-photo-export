@@ -83,9 +83,15 @@ asymmetric rename.
   HEIC. Non-HEIC photos (already-JPEG captures, PNG, screenshots, edited photos that
   Photos rendered as JPEG) are unaffected.
 
-The toggle applies to **new exports only.** Existing HEIC files on disk aren't touched
-when you flip it on — re-run an Export action (Export All, Export Month, Export Album,
-or wait for Auto Export) to convert them.
+**Replace already-exported HEIC files** (off by default, shown while the conversion
+toggle is on) extends the rewrite to files already on disk. When on, the next export
+run replaces older HEIC files with their JPEG exports and removes the stale HEICs from
+the destination — a HEIC that is no longer needed under the current selection is
+deleted by a cleanup-only pass, and Live Photo paired videos are rewritten too so each
+still + video pair keeps sharing one natural filename instead of gaining ` (1)`
+duplicates. Only files Photo Export itself created (tracked in its export records) are
+ever removed — nothing else in the destination folder is touched. If a conversion
+fails, the old HEIC stays on disk and the next run retries.
 
 The two toggles compose naturally. Under **Include originals + Convert HEIC to JPEG**,
 an unedited HEIC capture writes both the JPEG (at the natural filename) and the original

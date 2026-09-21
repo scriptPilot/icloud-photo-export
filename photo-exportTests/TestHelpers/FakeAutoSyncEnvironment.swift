@@ -26,6 +26,11 @@ final class FakeAutoSyncExportRunner: AutoSyncExportRunning {
     convertHEICToJPEGSubject.eraseToAnyPublisher()
   }
 
+  let convertHEICOverwriteSubject = CurrentValueSubject<Bool, Never>(false)
+  var convertHEICOverwriteExistingPublisher: AnyPublisher<Bool, Never> {
+    convertHEICOverwriteSubject.eraseToAnyPublisher()
+  }
+
   let completedRunsSubject = PassthroughSubject<ExportRunSummary, Never>()
   var completedRunsPublisher: AnyPublisher<ExportRunSummary, Never> {
     completedRunsSubject.eraseToAnyPublisher()

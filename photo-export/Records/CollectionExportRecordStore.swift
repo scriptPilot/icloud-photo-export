@@ -152,6 +152,12 @@ final class CollectionExportRecordStore: ObservableObject {
   /// re-render when the toggle flips. See `ExportRecordStore`'s sibling
   /// docstring; the same reasoning applies to collection placements.
   @Published var convertHEICToJPEG: Bool = false
+
+  /// Mirror of `ExportManager.convertHEICOverwriteExisting`. Kept in sync by
+  /// the manager the same way `convertHEICToJPEG` is. Read by
+  /// `isExported(asset:placement:selection:)` so "Replace already-exported
+  /// HEIC files" re-evaluates stale-HEIC assets as incomplete.
+  @Published var convertHEICOverwriteExisting: Bool = false
   private var notifyWorkItem: DispatchWorkItem?
 
   private let fileManager = FileManager.default
@@ -546,7 +552,8 @@ final class CollectionExportRecordStore: ObservableObject {
       variants: body.typedVariants, asset: asset, selection: selection,
       policy: placement.kind.variantPolicy,
       convertHEICToJPEG: convertHEICToJPEG,
-      livePhotosPaired: livePhotosPaired)
+      livePhotosPaired: livePhotosPaired,
+      overwriteExistingHEIC: convertHEICOverwriteExisting)
   }
 
   // MARK: - Scoped queries

@@ -26,7 +26,7 @@ struct AdvancedSettingsView: View {
 
       Section("Format") {
         includeOriginalsRow
-        convertHEICToJPEGRow
+        convertHEICSection
         livePhotosPairedRow
       }
 
@@ -51,6 +51,18 @@ struct AdvancedSettingsView: View {
     .disabled(exportManager.hasActiveExportWork)
   }
 
+  /// The HEIC→JPEG main toggle plus its conditional "replace existing files"
+  /// sub-toggle. The sub-row only appears while the main toggle is on —
+  /// replacing files is meaningless without the conversion — and is indented
+  /// to read as a child of the main setting.
+  @ViewBuilder
+  private var convertHEICSection: some View {
+    convertHEICToJPEGRow
+    if exportManager.convertHEICToJPEG {
+      convertHEICOverwriteRow
+    }
+  }
+
   private var convertHEICToJPEGRow: some View {
     Toggle(isOn: $exportManager.convertHEICToJPEG) {
       VStack(alignment: .leading, spacing: 4) {
@@ -61,6 +73,20 @@ struct AdvancedSettingsView: View {
           .fixedSize(horizontal: false, vertical: true)
       }
     }
+    .disabled(exportManager.hasActiveExportWork)
+  }
+
+  private var convertHEICOverwriteRow: some View {
+    Toggle(isOn: $exportManager.convertHEICOverwriteExisting) {
+      VStack(alignment: .leading, spacing: 4) {
+        Text("Replace already-exported HEIC files")
+        Text(convertHEICOverwriteDescription)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.leading, 20)
     .disabled(exportManager.hasActiveExportWork)
   }
 
@@ -109,10 +135,17 @@ struct AdvancedSettingsView: View {
     "Re-encode HEIC and HEIF photos as high-quality JPEG on export. "
       + "Useful if your destination (a NAS, a Windows PC, an older photo "
       + "viewer) doesn't understand HEIC.\n\n"
-      + "Applies to new exports only. Existing HEIC files on disk are not "
-      + "touched; re-run an Export action (Export All, Export Month, Export "
-      + "Album, or wait for Auto Export) to convert them.\n\n"
       + "Non-HEIC photos are unaffected."
+  }
+
+  private var convertHEICOverwriteDescription: String {
+    "Off: HEIC files exported earlier stay on disk; a re-export writes the "
+      + "JPEG alongside them.\n\n"
+      + "On: the next export run replaces those older HEIC files with the "
+      + "JPEG exports and removes them from the destination. Live Photo "
+      + "paired videos are rewritten too so each still + video pair keeps "
+      + "sharing one filename. Only files Photo Export itself created are "
+      + "removed — never anything else in the destination folder."
   }
 
   private var livePhotosPairedDescription: String {

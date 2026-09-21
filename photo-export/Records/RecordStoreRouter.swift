@@ -94,6 +94,22 @@ final class RecordStoreRouter {
     }
   }
 
+  /// Removes a single variant from the asset's record at `placement`. Used by
+  /// the HEIC-overwrite cleanup after deleting a stale file, and by any other
+  /// "this variant no longer exists on disk" transition. No-op when the record
+  /// or variant is absent (the stores guard internally).
+  func removeVariant(
+    assetId: String, placement: ExportPlacement, variant: ExportVariant
+  ) {
+    switch placement.kind {
+    case .timeline:
+      timelineStore.removeVariant(assetId: assetId, variant: variant)
+    case .favorites, .album, .sharedAlbum:
+      collectionStore.removeVariant(
+        assetId: assetId, placement: placement, variant: variant)
+    }
+  }
+
   // MARK: - Cancellation cleanup
 
   /// Removes the `(assetId, variant)` record at `placement` if and only if its status is

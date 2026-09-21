@@ -153,6 +153,19 @@ final class AutoSyncManager: ObservableObject {
       }
       .store(in: &subscriptions)
 
+    // "Replace already-exported HEIC files": stale-HEIC assets become
+    // eligible for a rewrite run, so AutoSync re-evaluates at the same 2s
+    // debounce as the other format toggles.
+    environment.exportRunner.convertHEICOverwriteExistingPublisher
+      .removeDuplicates()
+      .sink { [weak self] value in
+        dispatchPrecondition(condition: .onQueue(.main))
+        MainActor.assumeIsolated {
+          self?.dispatch(.convertHEICOverwriteChanged(value))
+        }
+      }
+      .store(in: &subscriptions)
+
     // Manual-run completion hook for plan §"Dirty State" clear rule. AutoSync-
     // sourced summaries are routed through the `runExport`-await return path
     // inside `startRun`; filtering here to `.manual` avoids dispatching

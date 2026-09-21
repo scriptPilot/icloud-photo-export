@@ -26,6 +26,12 @@ enum AutoSyncEvent: Sendable {
   /// become eligible; the reducer re-evaluates at the standard 2s debounce.
   case convertHEICToJPEGChanged(Bool)
 
+  /// `Replace already-exported HEIC files` toggle changed. When enabled
+  /// together with `convertHEICToJPEG`, assets whose recorded files are stale
+  /// HEICs become eligible for a rewrite run; the reducer re-evaluates at the
+  /// same 2s debounce.
+  case convertHEICOverwriteChanged(Bool)
+
   /// Photos library reported a persistent change. The reducer extracts inserted /
   /// updated / deleted ids and decides whether to schedule a targeted re-evaluation,
   /// fall back to bounded full reconciliation, or no-op.

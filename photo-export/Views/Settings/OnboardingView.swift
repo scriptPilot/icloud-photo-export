@@ -25,6 +25,14 @@ struct OnboardingView: View {
     }
     .firstRunWindowMinSize()
     .background(Color(.windowBackgroundColor))
+    // Seed the toggles from the manager's persisted state so the "Continue /
+    // Start Export" button writes back what the user actually sees — without
+    // this, the HEIC toggle (on by default) would be clobbered to off by the
+    // onboarding's apply step.
+    .onAppear {
+      includeOriginals = exportManager.includeOriginals
+      convertHEICToJPEG = exportManager.convertHEICToJPEG
+    }
   }
 
   private var content: some View {

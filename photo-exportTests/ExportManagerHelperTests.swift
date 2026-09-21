@@ -95,20 +95,7 @@ struct ExportManagerHelperTests {
   /// `MonthContentView` / `CollectionContentView` rely on.
   @Test func convertHEICToJPEGToggleDefaultsOffAndMirrorsToStores() {
     let defaults = UserDefaults(suiteName: "test-heic47-\(UUID().uuidString)")!
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString, isDirectory: true)
-    let timeline = ExportRecordStore(baseDirectoryURL: tempDir)
-    timeline.configure(for: "test")
-    let collection = CollectionExportRecordStore(baseDirectoryURL: tempDir)
-    collection.configure(for: "test")
-    let photoLib = PhotoLibraryManager()
-    let destMgr = ExportDestinationManager(skipRestore: true)
-    let manager = ExportManager(
-      photoLibraryService: photoLib,
-      exportDestination: destMgr,
-      exportRecordStore: timeline,
-      collectionExportRecordStore: collection,
-      userDefaults: defaults)
+    let (timeline, collection, manager) = makeToggleTestManager(defaults: defaults)
 
     #expect(manager.convertHEICToJPEG == false,
       "Toggle must default to false when nothing is persisted")
@@ -135,20 +122,7 @@ struct ExportManagerHelperTests {
     let defaults = UserDefaults(suiteName: suiteName)!
     defaults.set(true, forKey: ExportManager.convertHEICToJPEGDefaultsKey)
 
-    let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
-      UUID().uuidString, isDirectory: true)
-    let timeline = ExportRecordStore(baseDirectoryURL: tempDir)
-    timeline.configure(for: "test")
-    let collection = CollectionExportRecordStore(baseDirectoryURL: tempDir)
-    collection.configure(for: "test")
-    let photoLib = PhotoLibraryManager()
-    let destMgr = ExportDestinationManager(skipRestore: true)
-    let manager = ExportManager(
-      photoLibraryService: photoLib,
-      exportDestination: destMgr,
-      exportRecordStore: timeline,
-      collectionExportRecordStore: collection,
-      userDefaults: defaults)
+    let (timeline, collection, manager) = makeToggleTestManager(defaults: defaults)
 
     #expect(manager.convertHEICToJPEG == true,
       "Manager must read the persisted toggle from UserDefaults at init")
@@ -156,6 +130,43 @@ struct ExportManagerHelperTests {
       "Manager init must mirror the persisted toggle into the timeline store")
     #expect(collection.convertHEICToJPEG == true,
       "Manager init must mirror the persisted toggle into the collection store")
+  }
+
+  // MARK: - convertHEICOverwriteExisting toggle
+
+  /// The overwrite toggle defaults to off (deletion must be explicit),
+  /// mirrors through to both record stores, and persists to UserDefaults.
+  @Test func convertHEICOverwriteDefaultsOffAndMirrorsToStores() {
+    let defaults = UserDefaults(suiteName: "test-heic-ow-\(UUID().uuidString)")!
+    let (timeline, collection, manager) = makeToggleTestManager(defaults: defaults)
+
+    #expect(manager.convertHEICOverwriteExisting == false,
+      "Overwrite toggle must default to false when nothing is persisted")
+    #expect(timeline.convertHEICOverwriteExisting == false)
+    #expect(collection.convertHEICOverwriteExisting == false)
+
+    manager.convertHEICOverwriteExisting = true
+
+    #expect(manager.convertHEICOverwriteExisting == true)
+    #expect(timeline.convertHEICOverwriteExisting == true,
+      "Manager didSet must mirror the overwrite toggle into the timeline store")
+    #expect(collection.convertHEICOverwriteExisting == true,
+      "Manager didSet must mirror the overwrite toggle into the collection store")
+    #expect(
+      defaults.bool(forKey: ExportManager.convertHEICOverwriteExistingDefaultsKey) == true,
+      "Manager didSet must persist the overwrite toggle to UserDefaults")
+  }
+
+  /// The overwrite toggle persists across manager inits like every other
+  /// format setting.
+  @Test func convertHEICOverwritePersistsAcrossManagerInits() {
+    let defaults = UserDefaults(suiteName: "test-heic-ow-persist-\(UUID().uuidString)")!
+    defaults.set(true, forKey: ExportManager.convertHEICOverwriteExistingDefaultsKey)
+    let (timeline, collection, manager) = makeToggleTestManager(defaults: defaults)
+
+    #expect(manager.convertHEICOverwriteExisting == true)
+    #expect(timeline.convertHEICOverwriteExisting == true)
+    #expect(collection.convertHEICOverwriteExisting == true)
   }
 
   // MARK: - livePhotosPairedExport toggle (issue #49)
@@ -216,6 +227,14 @@ struct ExportManagerHelperTests {
   /// `ExportManager.init` doesn't fall back to the standard suite (which would leak
   /// state across tests).
   private func makeManagerForTogglePersistence(userDefaults: UserDefaults) -> ExportManager {
+    makeToggleTestManager(defaults: userDefaults).manager
+  }
+
+  /// Toggle-test rig: returns the two configured record stores alongside the
+  /// manager so mirror assertions can read them directly.
+  private func makeToggleTestManager(defaults: UserDefaults) -> (
+    timeline: ExportRecordStore, collection: CollectionExportRecordStore, manager: ExportManager
+  ) {
     let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(
       UUID().uuidString, isDirectory: true)
     let timeline = ExportRecordStore(baseDirectoryURL: tempDir)
@@ -224,12 +243,13 @@ struct ExportManagerHelperTests {
     collection.configure(for: "test")
     let photoLib = PhotoLibraryManager()
     let destMgr = ExportDestinationManager(skipRestore: true)
-    return ExportManager(
+    let manager = ExportManager(
       photoLibraryService: photoLib,
       exportDestination: destMgr,
       exportRecordStore: timeline,
       collectionExportRecordStore: collection,
-      userDefaults: userDefaults)
+      userDefaults: defaults)
+    return (timeline, collection, manager)
   }
 
   @Test func startExportMonthShortCircuitsWhenTimelineNotReady() {

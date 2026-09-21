@@ -122,6 +122,32 @@ final class ExportManager: ObservableObject {
 
   static let convertHEICToJPEGDefaultsKey = "exportConvertHEICToJPEG"
 
+  /// Opt-in companion to `convertHEICToJPEG`: when both are on, a re-export
+  /// run *replaces* HEIC files already on disk — the recorded `.done` image
+  /// variants whose files are still HEIC/HEIF are rewritten as JPEG (or
+  /// dropped when no longer required under the current selection), and the
+  /// stale HEIC files are deleted from the destination. Live Photo paired
+  /// videos are rewritten too so the still+motion pair keeps sharing one
+  /// natural stem. Default off — deletion is destructive, so it must be an
+  /// explicit choice. Persisted to `UserDefaults` the same shape as
+  /// `convertHEICToJPEG`; mirrored into both record stores so view-side
+  /// `isExported` queries re-evaluate stale assets the same way the queue
+  /// does.
+  @Published var convertHEICOverwriteExisting: Bool {
+    didSet {
+      userDefaults.set(
+        convertHEICOverwriteExisting, forKey: Self.convertHEICOverwriteExistingDefaultsKey)
+      exportRecordStore.convertHEICOverwriteExisting = convertHEICOverwriteExisting
+      collectionExportRecordStore.convertHEICOverwriteExisting = convertHEICOverwriteExisting
+      // Toggling changes which assets count as exported (stale-HEIC assets
+      // become eligible for a rewrite run), so any prior empty-run message
+      // may be misleading.
+      clearEmptyRunMessage()
+    }
+  }
+
+  static let convertHEICOverwriteExistingDefaultsKey = "exportConvertHEICOverwriteExisting"
+
   /// Toolbar/onboarding-friendly view of `versionSelection`. Off ↔ `.edited`, on ↔
   /// `.editedWithOriginals`. Mutations route back through `versionSelection` so
   /// `@Published` observation and `UserDefaults` persistence flow through one source.
@@ -221,6 +247,14 @@ final class ExportManager: ObservableObject {
   /// `requiredVariants` widens to include `.edited`.
   var convertHEICToJPEGPublisher: AnyPublisher<Bool, Never> {
     $convertHEICToJPEG.eraseToAnyPublisher()
+  }
+
+  /// Combine publisher for `convertHEICOverwriteExisting`. AutoSync subscribes
+  /// so enabling "Replace already-exported HEIC files" re-triggers a debounced
+  /// evaluation — assets whose recorded files are stale HEICs become eligible
+  /// for a rewrite run without the user having to start a manual export.
+  var convertHEICOverwriteExistingPublisher: AnyPublisher<Bool, Never> {
+    $convertHEICOverwriteExisting.eraseToAnyPublisher()
   }
 
   /// Combine publisher for `livePhotosPairedExport` (issue #49). `PhotoLibraryManager`
@@ -519,8 +553,12 @@ final class ExportManager: ObservableObject {
       self.videoLayout = .flat
     }
     self.convertHEICToJPEG = userDefaults.bool(forKey: Self.convertHEICToJPEGDefaultsKey)
+    self.convertHEICOverwriteExisting = userDefaults.bool(
+      forKey: Self.convertHEICOverwriteExistingDefaultsKey)
     self.exportRecordStore.convertHEICToJPEG = self.convertHEICToJPEG
     self.collectionExportRecordStore.convertHEICToJPEG = self.convertHEICToJPEG
+    self.exportRecordStore.convertHEICOverwriteExisting = self.convertHEICOverwriteExisting
+    self.collectionExportRecordStore.convertHEICOverwriteExisting = self.convertHEICOverwriteExisting
     // `self` is fully initialised now — rebind the default renderer with
     // a callback that routes render activity back to `renderActivity`.
     if mediaRenderer == nil {
@@ -1859,9 +1897,40 @@ final class ExportManager: ObservableObject {
         policy: job.placement.kind.variantPolicy,
         convertHEICToJPEG: convertHEICToJPEG,
         livePhotosPaired: job.livePhotosPaired)
+      // "Replace already-exported HEIC files" (both toggles on): image-side
+      // `.done` variants whose recorded files are still HEIC/HEIF must be
+      // rewritten as JPEG, and HEIC files that are no longer required under
+      // the current selection are removed after the run. The paired `.MOV`
+      // files follow the still: they are deleted up front so the rewritten
+      // pair lands at the natural stem instead of `(1)`-suffixed duplicates.
+      let overwriteActive = convertHEICToJPEG && convertHEICOverwriteExisting
+      let staleHEICs =
+        overwriteActive
+        ? ExportCompletionPolicy.staleHEICVariants(
+          variants: existingVariants, convertHEICToJPEG: convertHEICToJPEG,
+          overwriteExisting: convertHEICOverwriteExisting)
+        : [:]
       let missing = required.filter { variant in
         let existing = existingRecord?.variants[variant]
-        if existing?.status == .done { return false }
+        if existing?.status == .done {
+          // Under the overwrite toggle a done variant whose recorded file is
+          // a stale HEIC counts as missing — the rewrite below produces the
+          // JPEG replacement.
+          if overwriteActive, !variant.isPairedVideo,
+            let filename = existing?.filename,
+            ExportCompletionPolicy.isStaleHEICFilename(filename)
+          {
+            return true
+          }
+          // The pre-delete below removes every recorded paired video so the
+          // rewritten pair lands at the natural stem — any required paired
+          // variant caught by that sweep must be rewritten in this same run,
+          // otherwise the still + motion pair stays split until the next run.
+          if overwriteActive, variant.isPairedVideo, !staleHEICs.isEmpty {
+            return true
+          }
+          return false
+        }
         // Paired-video variants `.failed` with the unavailable sentinel are covered
         // by the policy and should NOT be re-queued. Photos still doesn't have a
         // motion file to give; re-running the variant exporter would write the
@@ -1877,10 +1946,36 @@ final class ExportManager: ObservableObject {
         }
         return true
       }
-      if missing.isEmpty {
+      if missing.isEmpty, staleHEICs.isEmpty {
         logger.debug(
           "All required variants already .done for id: \(descriptor.id, privacy: .public)")
         return
+      }
+      if missing.isEmpty {
+        // Cleanup-only run: every required variant is already on disk, but
+        // stale HEIC files remain from exports under the old settings. Delete
+        // them and drop their records — no re-export, no converter call.
+        try throwIfCancelledOrStale(gen)
+        let staleNames = staleHEICs.keys.map(\.rawValue).sorted().joined(separator: ",")
+        logger.debug(
+          "Stale HEIC cleanup for id: \(descriptor.id, privacy: .public) variants: \(staleNames, privacy: .public)"
+        )
+        removeStaleHEICFiles(
+          staleHEICs: staleHEICs, assetId: descriptor.id, placement: job.placement,
+          finalVariants: existingVariants)
+        return
+      }
+      if !staleHEICs.isEmpty {
+        // Rule B: the rewrite lands at the natural stem, so recorded paired
+        // `.MOV` files of the old layout are removed first — otherwise the
+        // new motion write collides and gets a ` (1)` suffix, splitting the
+        // Live Photo pair across filenames. Self-healing: if the run fails
+        // after this point, the paired variant is no longer `.done`, so the
+        // next run rewrites it.
+        try throwIfCancelledOrStale(gen)
+        removeRecordedPairedVideos(
+          of: descriptor.id, placement: job.placement,
+          existingVariants: existingVariants)
       }
 
       // Variant order: image side first within each pairing group so the motion file inherits
@@ -2033,6 +2128,24 @@ final class ExportManager: ObservableObject {
           relPath: relPath, job: job, generation: gen, inFlight: &inFlight,
           subfolder: subfolder)
       }
+
+      // Overwrite cleanup (rule C): once every required variant is satisfied,
+      // delete the stale HEIC files the run replaced (or made redundant) and
+      // drop the records that still point at them. Rewritten variants (those
+      // that were in `missing`) keep their records — the file they now name is
+      // the JPEG replacement; only the orphaned HEIC file is removed.
+      if !staleHEICs.isEmpty, isCurrent(gen) {
+        let finalVariants = currentVariants(assetId: descriptor.id, placement: job.placement)
+        let complete = ExportCompletionPolicy.isComplete(
+          variants: finalVariants, asset: descriptor, selection: job.selection,
+          policy: job.placement.kind.variantPolicy,
+          convertHEICToJPEG: convertHEICToJPEG, livePhotosPaired: job.livePhotosPaired)
+        if complete {
+          removeStaleHEICFiles(
+            staleHEICs: staleHEICs, assetId: descriptor.id, placement: job.placement,
+            finalVariants: finalVariants)
+        }
+      }
     } catch is CancellationError {
       logger.info(
         "Export cancelled for id: \(job.assetLocalIdentifier, privacy: .public)")
@@ -2184,6 +2297,95 @@ final class ExportManager: ObservableObject {
     assetId: String, placement: ExportPlacement
   ) -> [ExportVariant: ExportVariantRecord] {
     recordStoreRouter.variants(forAssetId: assetId, placement: placement)
+  }
+
+  // MARK: - HEIC overwrite file replacement
+
+  /// Deletes the on-disk files recorded by `staleHEICs` and drops their variant
+  /// records when appropriate. Called only after a run in which every required
+  /// variant is satisfied, so deleting the stale HEIC can never leave the asset
+  /// without its user-visible bytes.
+  ///
+  /// Per stale variant:
+  /// - The HEIC file at the recorded location (placement path + the record's
+  ///   own `subfolder` + filename) is deleted. Only files this app recorded as
+  ///   `.done` are ever removed — unrelated files at the destination are not
+  ///   touched.
+  /// - If the variant's record still points at the stale filename, the record
+  ///   is removed entirely (the variant is no longer represented on disk).
+  ///   A rewritten variant's record names the new JPEG, so it survives.
+  ///
+  /// Deletion failures are logged and leave the record in place — the next
+  /// run's stale sweep retries (the asset stays "incomplete" under the
+  /// overwrite gate until the HEIC is gone).
+  private func removeStaleHEICFiles(
+    staleHEICs: [ExportVariant: ExportVariantRecord],
+    assetId: String,
+    placement: ExportPlacement,
+    finalVariants: [ExportVariant: ExportVariantRecord]
+  ) {
+    for (variant, staleRecord) in staleHEICs {
+      guard let filename = staleRecord.filename else {
+        recordStoreRouter.removeVariant(assetId: assetId, placement: placement, variant: variant)
+        continue
+      }
+      let removed = removeRecordedFile(
+        placement: placement, subfolder: staleRecord.subfolder, filename: filename)
+      guard removed else { continue }
+      if finalVariants[variant]?.filename == filename {
+        recordStoreRouter.removeVariant(
+          assetId: assetId, placement: placement, variant: variant)
+      }
+    }
+  }
+
+  /// Deletes the recorded `.done` paired-video files of an asset at `placement`
+  /// (the "the `.MOV` follows the still" rule). Called before a rewrite run
+  /// whose image side will land at the natural stem, so the new motion file
+  /// doesn't collide with the old one.
+  private func removeRecordedPairedVideos(
+    of assetId: String,
+    placement: ExportPlacement,
+    existingVariants: [ExportVariant: ExportVariantRecord]
+  ) {
+    for variant in ExportVariant.allCases where variant.isPairedVideo {
+      guard let record = existingVariants[variant], record.status == .done,
+        let filename = record.filename
+      else { continue }
+      if removeRecordedFile(
+        placement: placement, subfolder: record.subfolder, filename: filename)
+      {
+        recordStoreRouter.removeVariant(
+          assetId: assetId, placement: placement, variant: variant)
+      }
+    }
+  }
+
+  /// Deletes a single recorded file under `placement` (plus the variant's own
+  /// `subfolder`) and returns whether the deletion succeeded. Missing files
+  /// count as removed. Failures are logged; the caller keeps the record so the
+  /// next run retries.
+  private func removeRecordedFile(
+    placement: ExportPlacement, subfolder: String?, filename: String
+  ) -> Bool {
+    let relPath = ExportPlacementPathPolicy.relativePath(
+      placement: placement, subfolder: subfolder)
+    do {
+      let dir = try exportDestination.urlForRelativeDirectory(
+        relPath, createIfNeeded: false)
+      let url = dir.appendingPathComponent(filename)
+      guard fileSystem.fileExists(atPath: url.path) else { return true }
+      try fileSystem.removeItem(at: url)
+      logger.info(
+        "Removed stale file \(filename, privacy: .public) at \(relPath, privacy: .public)"
+      )
+      return true
+    } catch {
+      logger.error(
+        "Failed to remove stale file \(filename, privacy: .public) at \(relPath, privacy: .public) error: \(error.localizedDescription, privacy: .public)"
+      )
+      return false
+    }
   }
 
   // `allocateUnusedOrigStem` and `inheritedGroupStem` moved to ExportDestinationResolver.

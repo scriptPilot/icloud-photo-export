@@ -22,6 +22,10 @@ enum AutoSyncReducer {
     /// re-trigger the reducer at the same 2s debounce as
     /// `versionSelection`.
     var convertHEICToJPEG: Bool
+    /// Issue: "Replace already-exported HEIC files". When on (together with
+    /// `convertHEICToJPEG`), stale-HEIC assets become eligible for a rewrite
+    /// run; toggle changes re-trigger the reducer at the same 2s debounce.
+    var convertHEICOverwriteExisting: Bool
     var importActive: Bool
     var exportRunState: ExportRunState
     /// Per-destination accumulated dirty state. Updated by `photosChanged` events
@@ -43,6 +47,7 @@ enum AutoSyncReducer {
       scopeSelection: AutoExportScopeSelection(),
       versionSelection: .edited,
       convertHEICToJPEG: false,
+      convertHEICOverwriteExisting: false,
       importActive: false,
       exportRunState: .idle,
       dirtyStateByDestination: [:],
@@ -137,6 +142,12 @@ enum AutoSyncReducer {
       newState.convertHEICToJPEG = value
       if value != state.convertHEICToJPEG {
         triggerReason = .convertHEICToJPEGChanged
+      }
+
+    case .convertHEICOverwriteChanged(let value):
+      newState.convertHEICOverwriteExisting = value
+      if value != state.convertHEICOverwriteExisting {
+        triggerReason = .convertHEICOverwriteChanged
       }
 
     case .importStateChanged(let isImporting):
@@ -583,7 +594,8 @@ enum AutoSyncReducer {
       return 10
     case .destinationSelected, .destinationBecameAvailable:
       return 3
-    case .scopeSelectionChanged, .versionSelectionChanged, .convertHEICToJPEGChanged:
+    case .scopeSelectionChanged, .versionSelectionChanged, .convertHEICToJPEGChanged,
+      .convertHEICOverwriteChanged:
       return 2
     case .photosChanged:
       return 30

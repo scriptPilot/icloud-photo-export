@@ -22,6 +22,10 @@ enum AutoSyncReason: String, Codable, Equatable, Sendable {
   /// (HEIC originals widen `requiredVariants` to include `.edited`), so
   /// previously-skipped HEIC assets become eligible mid-run-window.
   case convertHEICToJPEGChanged
+  /// User toggled `Replace already-exported HEIC files`. Re-triggers AutoSync
+  /// because stale-HEIC assets become eligible for a rewrite run when the
+  /// overwrite toggle joins the conversion toggle.
+  case convertHEICOverwriteChanged
   case photosChanged
   /// Fallback when the persistent-change token was expired/invalid/details-unavailable; a
   /// bounded full reconciliation runs after the 2-minute quiet window.
@@ -42,6 +46,7 @@ enum AutoSyncReason: String, Codable, Equatable, Sendable {
     case .scopeSelectionChanged: return "scope changed"
     case .versionSelectionChanged: return "version changed"
     case .convertHEICToJPEGChanged: return "HEIC conversion changed"
+    case .convertHEICOverwriteChanged: return "HEIC replacement changed"
     case .photosChanged: return "library changed"
     case .photosChangeFallback: return "library catch-up"
     case .userExportNow: return "Export Now"

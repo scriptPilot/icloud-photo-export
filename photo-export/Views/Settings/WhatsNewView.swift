@@ -73,7 +73,7 @@ struct WhatsNewView: View {
       )
       bullet(
         "Your files are safe",
-        "Photo Export has read-only access to your Photos library and never deletes or overwrites files at your destination — including during recovery flows."
+        "Photo Export has read-only access to your Photos library. By default it never deletes or overwrites files at your destination — the only exception is the opt-in **Replace already-exported HEIC files** setting, which removes older HEIC files Photo Export itself created after their JPEG replacements are written."
       )
       Text(
         "Want a tour? The [Getting Started guide](https://valtteriluomapareto.github.io/photo-export/getting-started/) walks through the first export step by step."

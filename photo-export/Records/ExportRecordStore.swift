@@ -113,6 +113,13 @@ final class ExportRecordStore: ObservableObject {
   /// Change rate is zero outside user-toggle clicks, so no render-storm
   /// concern.
   @Published var convertHEICToJPEG: Bool = false
+
+  /// Mirror of `ExportManager.convertHEICOverwriteExisting`. Kept in sync by
+  /// the manager the same way `convertHEICToJPEG` is. Read by
+  /// `isExported(asset:selection:)` so "Replace already-exported HEIC files"
+  /// re-evaluates stale-HEIC assets as incomplete without callers threading
+  /// the flag.
+  @Published var convertHEICOverwriteExisting: Bool = false
   private var notifyWorkItem: DispatchWorkItem?
 
   private let fileManager = FileManager.default
@@ -406,7 +413,8 @@ final class ExportRecordStore: ObservableObject {
     return ExportCompletionPolicy.isComplete(
       variants: record.variants, asset: asset, selection: selection, policy: .standard,
       convertHEICToJPEG: convertHEICToJPEG,
-      livePhotosPaired: livePhotosPaired)
+      livePhotosPaired: livePhotosPaired,
+      overwriteExistingHEIC: convertHEICOverwriteExisting)
   }
 
   func exportInfo(assetId: String) -> ExportRecord? {

@@ -26,13 +26,20 @@ enum ExportCompletionPolicy {
   /// asset under the toggle reads as "requires `.edited`" — completion checks against the
   /// synthesized JPEG record rather than the untouched HEIC `.original`. Default `false`
   /// preserves call-site behavior for tests and pre-toggle wrappers.
+  ///
+  /// `overwriteExistingHEIC` is the "Replace already-exported HEIC files" toggle. When
+  /// (together with `convertHEICToJPEG`) it is on, a `.done` image variant whose recorded
+  /// file is still a HEIC counts as *incomplete* — the next run rewrites it as JPEG (or
+  /// removes it when it is no longer required). Default `false` preserves the
+  /// never-touch-existing-files contract.
   static func isComplete(
     variants: [ExportVariant: ExportVariantRecord],
     asset: AssetDescriptor,
     selection: ExportVersionSelection,
     policy: VariantPolicy,
     convertHEICToJPEG: Bool = false,
-    livePhotosPaired: Bool = false
+    livePhotosPaired: Bool = false,
+    overwriteExistingHEIC: Bool = false
   ) -> Bool {
     let required = requiredVariants(
       for: asset, selection: selection, policy: policy,
@@ -53,8 +60,56 @@ enum ExportCompletionPolicy {
       }
       return false
     }
-    if allSatisfied { return true }
+    if allSatisfied {
+      if overwriteExistingHEIC && convertHEICToJPEG,
+        !staleHEICVariants(
+          variants: variants, convertHEICToJPEG: convertHEICToJPEG,
+          overwriteExisting: overwriteExistingHEIC
+        ).isEmpty
+      {
+        return false
+      }
+      return true
+    }
     return satisfiesEditedFallback(variants: variants, asset: asset, selection: selection)
+  }
+
+  // MARK: - HEIC overwrite support ("Replace already-exported HEIC files")
+
+  /// True when `filename` names a HEIC/HEIF file that the overwrite setting considers
+  /// replaceable: the extension is `.heic`/`.heif` AND the filename is not already in the
+  /// `_orig` companion form. The companion exemption is load-bearing — under
+  /// `editedWithOriginals` the original-side variant is *supposed* to stay HEIC
+  /// (`IMG_0001_orig.HEIC` next to the JPEG edit); treating it as stale would re-enqueue
+  /// the asset forever.
+  static func isStaleHEICFilename(_ filename: String) -> Bool {
+    let ext = (filename as NSString).pathExtension.lowercased()
+    guard ext == "heic" || ext == "heif" else { return false }
+    return !ExportFilenamePolicy.isOrigCompanion(filename: filename)
+  }
+
+  /// The image-side variants among `variants` whose recorded `.done` file is a stale
+  /// HEIC (see `isStaleHEICFilename`). Empty unless both toggles are on. Paired-video
+  /// variants are never stale — their bytes are `.MOV` and unrelated to the format
+  /// conversion; the export pipeline rewrites them as a *pairing* side effect, not
+  /// through this predicate.
+  ///
+  /// Returns the full variant records (not just the keys) because the overwrite flow
+  /// needs the recorded filename + `subfolder` to locate the on-disk file it replaces.
+  static func staleHEICVariants(
+    variants: [ExportVariant: ExportVariantRecord],
+    convertHEICToJPEG: Bool,
+    overwriteExisting: Bool
+  ) -> [ExportVariant: ExportVariantRecord] {
+    guard convertHEICToJPEG, overwriteExisting else { return [:] }
+    var stale: [ExportVariant: ExportVariantRecord] = [:]
+    for (variant, record) in variants where !variant.isPairedVideo {
+      guard record.status == .done, let filename = record.filename else { continue }
+      if isStaleHEICFilename(filename) {
+        stale[variant] = record
+      }
+    }
+    return stale
   }
 
   /// True when an adjusted asset asked to export `.edited` is covered by the `_orig`
