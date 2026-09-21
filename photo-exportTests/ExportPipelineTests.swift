@@ -263,10 +263,14 @@ struct ExportPipelineTests {
     photoLib.assetsByYearMonth["2025-8"] = [asset]
     photoLib.resourcesByAssetId["already-done"] = [resource]
 
-    // Pre-mark as exported
+    // Pre-mark as exported, with the backing file planted so the pre-plan
+    // missing-file reconcile leaves the record in place.
     store.markExported(
       assetId: "already-done", year: 2025, month: 8, relPath: "2025/08/",
       filename: "IMG_0001.JPG", exportedAt: Date())
+    let doneDir = dest.rootURL.appendingPathComponent("2025/08", isDirectory: true)
+    try FileManager.default.createDirectory(at: doneDir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: doneDir.appendingPathComponent("IMG_0001.JPG"))
 
     manager.startExportMonth(year: 2025, month: 8)
     await manager.waitForQueueDrained()

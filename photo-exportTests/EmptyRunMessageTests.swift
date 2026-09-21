@@ -10,6 +10,16 @@ import Testing
 struct EmptyRunMessageTests {
   // MARK: - Test harness
 
+  /// Plants the backing file for a planted `.done` record, so the store and the
+  /// destination agree. The export pipeline reconciles records against disk before
+  /// planning (missing-file re-export), so an "already exported" scenario needs its
+  /// file to actually exist or the run re-exports instead of skipping.
+  private func plantFile(dest: FakeExportDestination, relPath: String, filename: String) throws {
+    let dir = dest.rootURL.appendingPathComponent(relPath)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: dir.appendingPathComponent(filename))
+  }
+
   private func makeTestHarness() -> (
     ExportManager, FakePhotoLibraryService, FakeExportDestination, ExportRecordStore
   ) {
@@ -51,6 +61,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-asset", year: 2025, month: 3, relPath: "2025/03/",
       filename: "X.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2025/03/", filename: "X.JPG")
 
     manager.startExportMonth(year: 2025, month: 3)
     await manager.waitForQueueDrained()
@@ -71,6 +82,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-y", year: 2024, month: 5, relPath: "2024/05/",
       filename: "Y.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2024/05/", filename: "Y.JPG")
 
     manager.startExportYear(year: 2024)
     await manager.waitForQueueDrained()
@@ -91,6 +103,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-all", year: 2024, month: 5, relPath: "2024/05/",
       filename: "Z.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2024/05/", filename: "Z.JPG")
 
     manager.startExportAll()
     await manager.waitForQueueDrained()
@@ -130,6 +143,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-1", year: 2025, month: 5, relPath: "2025/05/",
       filename: "A.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2025/05/", filename: "A.JPG")
 
     manager.startExportMonth(year: 2025, month: 5)
     await manager.waitForQueueDrained()
@@ -157,6 +171,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-sel", year: 2025, month: 7, relPath: "2025/07/",
       filename: "S.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2025/07/", filename: "S.JPG")
 
     manager.startExportMonth(year: 2025, month: 7)
     await manager.waitForQueueDrained()
@@ -178,6 +193,7 @@ struct EmptyRunMessageTests {
     store.markExported(
       assetId: "done-cancel", year: 2025, month: 8, relPath: "2025/08/",
       filename: "C.JPG", exportedAt: Date())
+    try plantFile(dest: dest, relPath: "2025/08/", filename: "C.JPG")
 
     manager.startExportMonth(year: 2025, month: 8)
     await manager.waitForQueueDrained()

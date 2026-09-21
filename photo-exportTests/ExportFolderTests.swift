@@ -536,6 +536,12 @@ struct ExportFolderTests {
     h.collectionStore.markVariantExported(
       assetId: "d1", placement: placement, variant: .original,
       filename: "d1.HEIC", exportedAt: Date())
+    // Plant the backing file so the pre-plan missing-file reconcile keeps the
+    // `.done` variant (a missing file would re-queue the asset).
+    let albumDir = h.dest.rootURL.appendingPathComponent(
+      placement.relativePath, isDirectory: true)
+    try FileManager.default.createDirectory(at: albumDir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: albumDir.appendingPathComponent("d1.HEIC"))
 
     h.manager.startExportFolder(folderId: "F")
     await waitUntil(h.manager.emptyRunMessage != nil)
@@ -621,6 +627,12 @@ struct ExportFolderTests {
     h.collectionStore.markVariantExported(
       assetId: "d1", placement: placement, variant: .original,
       filename: "d1.HEIC", exportedAt: Date())
+    // Plant the backing file so the pre-plan missing-file reconcile keeps the
+    // `.done` variant (a missing file would re-queue the asset).
+    let albumDir = h.dest.rootURL.appendingPathComponent(
+      placement.relativePath, isDirectory: true)
+    try FileManager.default.createDirectory(at: albumDir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: albumDir.appendingPathComponent("d1.HEIC"))
 
     h.manager.startExportAlbums(collectionIds: ["done"])
     await waitUntil(h.manager.emptyRunMessage != nil)

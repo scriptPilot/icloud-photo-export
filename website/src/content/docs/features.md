@@ -153,20 +153,23 @@ layout stay where they are — turning this on later produces a mixed layout
 (old videos in the month root, new videos in `videos/`). The same is true in
 reverse when turning the setting off. There's no in-app action to relocate
 already-exported files: Photo Export tracks each variant as `.done` per
-destination and skips it on subsequent runs, so deleting files on disk and
-re-running Export Month alone won't rewrite them. To rebuild a month under
-the new layout, delete the existing copies on disk, run **Import Existing
-Backup** so the records reconcile against disk truth (missing variants get
-pruned), then re-run the Export action.
+destination and skips it on subsequent runs. To rebuild a month under the new
+layout, delete the existing copies on disk, then re-run the Export action —
+the run reconciles its scope against the destination's actual contents,
+prunes the records of files that are gone, and re-exports them at the new
+location.
 
 ### Danger Zone (Settings → Advanced)
 
-By default Photo Export never touches files it has already written — exports are
-additive. The **Danger Zone** section (the last one in Advanced Settings, shown
-in red like GitHub's settings danger zone) changes that: its options run as part
-of every export action (toolbar Export, sidebar Export, and Auto Export) and let
-the destination track the library instead of only accumulating. Both are off by
-default, and the toggles lock while an export is running.
+By default Photo Export never overwrites files it has already written — exports
+are additive. The only exception is a file you deleted by hand from the
+destination: the next export run of that scope re-creates it (see
+[Tracking and resume](#tracking-and-resume)). The **Danger Zone** section (the
+last one in Advanced Settings, shown in red like GitHub's settings danger zone)
+changes the rest: its options run as part of every export action (toolbar
+Export, sidebar Export, and Auto Export) and let the destination track the
+library instead of only accumulating. Both are off by default, and the toggles
+lock while an export is running.
 
 #### Replace updated files
 
@@ -247,6 +250,25 @@ The shared-album pane shows an in-app banner with the same warning so the choice
 - Per-destination tracking — switching destinations reconfigures automatically
 - Resume-safe: interrupted exports pick up where they left off without re-copying
 - Sidebar badges update as exports complete
+
+### Missing files are re-created
+
+Every export run first reconciles its own export scope against the
+destination's actual contents: a tracked file that no longer exists on disk —
+deleted by hand in Finder, or lost when an external cleanup emptied a folder —
+has its record pruned, and the run re-exports the file under the current
+settings (current version selection, video layout, and HEIC-to-JPEG choice).
+
+- The reconciliation is scoped to what the run covers: a month run only checks
+  its own month folder's records, a year run its year, an album or Favorites
+  run its own folder. Files deleted from scopes you don't re-export stay
+  removed.
+- Existing files are never overwritten — a re-created file lands under the
+  recorded filename because the old copy is gone; files that are still present
+  are not rewritten.
+- If the destination volume is temporarily unreachable (an ejected or sleeping
+  external drive), the check is skipped for that run instead of treating every
+  file as deleted.
 
 ## Queue controls
 

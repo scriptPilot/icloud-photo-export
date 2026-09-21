@@ -604,8 +604,10 @@ final class ExportRecordStore: ObservableObject {
   }
 
   /// Removes every `.done` variant whose backing file is missing from the destination.
-  /// Used by Import Existing Backup so a destination whose contents have shrunk (or
-  /// vanished) reflects disk truth instead of stale state from a previous run.
+  /// Used by Import Existing Backup (full store) and by `ExportManager` before each
+  /// export run's planning step (scoped to the run's timeline year/month) so a file the
+  /// user deleted by hand is pruned and re-created by the run instead of being reported
+  /// as "already exported" forever.
   ///
   /// Pruning rules:
   /// - `.failed`/`.inProgress` variants are left alone — they have signal value (Save
@@ -616,25 +618,40 @@ final class ExportRecordStore: ObservableObject {
   ///   of the same name) is pruned — only regular files satisfy "exported."
   /// - When all variants are pruned, the record is removed entirely.
   ///
+  /// Scope: `year`/`month` filter which records are examined — `nil` means unbounded
+  /// (the import flow's full sweep). `month` requires its `year` to be meaningful.
+  /// Records outside the filter are never probed or pruned, so a run for one scope
+  /// never resurrects (or prunes) deliberately-deleted files in other scopes.
+  ///
   /// Two-phase to respect the `@MainActor` isolation: snapshot on main, file checks
   /// off-main via `Task.detached`, mutations applied on main. Callers must run this
-  /// only when no export is active (the import flow already gates on
-  /// `!hasActiveExportWork`); concurrent mutation would invalidate the snapshot.
-  func reconcileAgainstFilesystem(at root: URL) async -> ReconcileSummary {
+  /// only when no export writes for the same scope are in flight. Because the export
+  /// path *can* overlap a still-draining queue, phase 3 re-checks the live record
+  /// before each prune: a variant that an in-flight job took over (status left
+  /// `.done`) or rewrote under a new filename (or re-exported, making the probed
+  /// path stale) between the snapshot and the apply is left to that job's outcome.
+  /// The import flow's `!hasActiveExportWork` gate makes these checks no-ops there.
+  func reconcileAgainstFilesystem(
+    at root: URL, year: Int? = nil, month: Int? = nil
+  ) async -> ReconcileSummary {
     guard state == .ready else { return .zero }
 
     // Phase 1 (main): snapshot every .done variant's expected on-disk path.
     struct Probe: Sendable {
       let assetId: String
       let variant: ExportVariant
+      let probedFilename: String?
       let path: String
       let isCorrupt: Bool
     }
     var probes: [Probe] = []
     for (assetId, record) in recordsById {
+      if let year, record.year != year { continue }
+      if let month, record.month != month { continue }
       for (variant, vr) in record.variants where vr.status == .done {
         guard let filename = vr.filename else {
-          probes.append(Probe(assetId: assetId, variant: variant, path: "", isCorrupt: true))
+          probes.append(
+            Probe(assetId: assetId, variant: variant, probedFilename: nil, path: "", isCorrupt: true))
           continue
         }
         // Issue #38: probe each variant's *own* on-disk location, computed from the
@@ -648,35 +665,46 @@ final class ExportRecordStore: ObservableObject {
           placement: placement, subfolder: vr.subfolder)
         let path = root.appendingPathComponent(dirRelPath)
           .appendingPathComponent(filename).path
-        probes.append(Probe(assetId: assetId, variant: variant, path: path, isCorrupt: false))
+        probes.append(
+          Probe(
+            assetId: assetId, variant: variant, probedFilename: filename, path: path,
+            isCorrupt: false))
       }
     }
 
     // Phase 2 (off-main): file checks. `fileExists(atPath:isDirectory:)` rejects a
     // directory standing in for the expected file.
     let probesCopy = probes
-    let toPrune: [(assetId: String, variant: ExportVariant)] = await Task.detached {
-      let fm = FileManager.default
-      var keys: [(assetId: String, variant: ExportVariant)] = []
-      for probe in probesCopy {
-        if probe.isCorrupt {
-          keys.append((probe.assetId, probe.variant))
-          continue
+    let toPrune: [(assetId: String, variant: ExportVariant, probedFilename: String?)] =
+      await Task.detached {
+        let fm = FileManager.default
+        var keys: [(assetId: String, variant: ExportVariant, probedFilename: String?)] = []
+        for probe in probesCopy {
+          if probe.isCorrupt {
+            keys.append((probe.assetId, probe.variant, nil))
+            continue
+          }
+          var isDir: ObjCBool = false
+          let exists = fm.fileExists(atPath: probe.path, isDirectory: &isDir)
+          if !exists || isDir.boolValue {
+            keys.append((probe.assetId, probe.variant, probe.probedFilename))
+          }
         }
-        var isDir: ObjCBool = false
-        let exists = fm.fileExists(atPath: probe.path, isDirectory: &isDir)
-        if !exists || isDir.boolValue {
-          keys.append((probe.assetId, probe.variant))
-        }
-      }
-      return keys
-    }.value
+        return keys
+      }.value
 
-    // Phase 3 (main): apply mutations.
+    // Phase 3 (main): apply mutations. The live-record re-check guards against a
+    // concurrently-draining queue: skip the prune when the variant is no longer the
+    // exact `.done` state that was probed (an in-flight job took it over or rewrote
+    // it under a new filename — that job owns the outcome now).
     var prunedVariants = 0
     var prunedRecords = 0
-    for (assetId, variant) in toPrune {
+    for (assetId, variant, probedFilename) in toPrune {
       guard var record = recordsById[assetId] else { continue }
+      guard let current = record.variants[variant],
+        current.status == .done,
+        current.filename == probedFilename
+      else { continue }
       guard record.variants.removeValue(forKey: variant) != nil else { continue }
       prunedVariants += 1
       if record.variants.isEmpty {

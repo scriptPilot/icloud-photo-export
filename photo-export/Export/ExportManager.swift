@@ -1641,6 +1641,13 @@ final class ExportManager: ObservableObject {
     // no-op for `.timeline` kinds (which the collection store rejects); collection-side
     // kinds (`.favorites`, `.album`, `.sharedAlbum`) all land here.
     collectionExportRecordStore.upsertPlacement(placement)
+    // Reconcile this placement's records against disk truth before planning: a file
+    // the user deleted by hand prunes its `.done` variant so the planner re-queues
+    // the asset. Placement metadata is persisted first so the reconcile can resolve
+    // the placement's relative path (and so a first-run placement isn't treated as an
+    // orphan body).
+    await reconcileMissingFilesForScope(.collection(placement), generation: gen)
+    try throwIfCancelledOrStale(gen)
     // Record this placement's folder for the run-end empty-folder walk
     // (recorded before planning so an already-complete scope is still pruned
     // when emptied). Ceiling: the placement folder itself — a single-album
@@ -1815,6 +1822,66 @@ final class ExportManager: ObservableObject {
 
   // MARK: - Queue Handling
 
+  // MARK: - Missing-file reconcile (records → disk truth)
+
+  /// The export scope whose records a pre-plan reconcile verifies against disk truth.
+  /// Deliberately carries identity only — unlike `ExportCleanupCoordinator.CleanupScope`
+  /// there is no fetched-asset-set payload, because the reconcile's question is "which
+  /// recorded files still exist?", not "which assets does the library still have?".
+  private enum ReconcileScope {
+    case timelineMonth(year: Int, month: Int)
+    case timelineYear(Int)
+    case collection(ExportPlacement)
+  }
+
+  /// Prunes `.done` record variants whose backing file is missing from the destination,
+  /// scoped to the run's export scope, *before* the enqueue-time `isExported` planning
+  /// step runs. Without this, files the user deleted by hand (Finder, external cleanup)
+  /// are reported as "already exported" forever — the record claims `.done` and nothing
+  /// ever consults the disk.
+  ///
+  /// Scope mapping (only the run's own scope is reconciled — a month run never touches
+  /// another month's records, and an album run never touches timeline records, so
+  /// deliberately-deleted files in *other* scopes are not resurrected):
+  /// - `.timelineMonth(year, month)` → timeline records for that year/month
+  /// - `.timelineYear(year)` → timeline records across that year's months
+  /// - `.collection(placement)` → collection records under that placement
+  ///
+  /// Runs inside the enqueue Task before planning. The two-phase store methods handle
+  /// a concurrently-draining queue via their live-record re-check (a variant an
+  /// in-flight job took over or rewrote is left to that job's outcome). Skipped when no
+  /// destination is selected — the run will fail later on its own.
+  private func reconcileMissingFilesForScope(
+    _ scope: ReconcileScope, generation gen: Int
+  ) async {
+    guard let root = exportDestination.selectedFolderURL else { return }
+    _ = exportDestination.beginScopedAccess()
+    defer { exportDestination.endScopedAccess(for: root) }
+    // Reachability probe (same rationale as the import flow's root check): a
+    // transiently unreadable or unmounted volume must not read as "the user deleted
+    // everything" — that would prune the scope's records wholesale and trigger a
+    // mass re-export. On probe failure, skip the sweep; the run's own writes will
+    // surface the real destination problem.
+    do {
+      _ = try FileManager.default.contentsOfDirectory(
+        at: root, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+    } catch {
+      logger.warning(
+        "Destination root unreachable; skipping missing-file reconcile: \(error.localizedDescription, privacy: .public)"
+      )
+      return
+    }
+    switch scope {
+    case .timelineMonth(let year, let month):
+      _ = await exportRecordStore.reconcileAgainstFilesystem(at: root, year: year, month: month)
+    case .timelineYear(let year):
+      _ = await exportRecordStore.reconcileAgainstFilesystem(at: root, year: year)
+    case .collection(let placement):
+      _ = await collectionExportRecordStore.reconcileAgainstFilesystem(
+        at: root, placementId: placement.id)
+    }
+  }
+
   /// Scans the month and returns the enqueue outcome. Callers use the outcome to decide
   /// whether to surface the "already exported" toolbar message.
   @discardableResult
@@ -1827,6 +1894,8 @@ final class ExportManager: ObservableObject {
   ) async throws -> EnqueueOutcome {
     try throwIfCancelledOrStale(gen)
     guard photoLibraryService.isAuthorized else { return .unauthorized }
+    await reconcileMissingFilesForScope(.timelineMonth(year: year, month: month), generation: gen)
+    try throwIfCancelledOrStale(gen)
     let assets = try await photoLibraryService.fetchAssets(year: year, month: month)
     try throwIfCancelledOrStale(gen)
     let placement = ExportPlacement.timeline(year: year, month: month)
@@ -1863,6 +1932,8 @@ final class ExportManager: ObservableObject {
   ) async throws -> EnqueueOutcome {
     try throwIfCancelledOrStale(gen)
     guard photoLibraryService.isAuthorized else { return .unauthorized }
+    await reconcileMissingFilesForScope(.timelineYear(year), generation: gen)
+    try throwIfCancelledOrStale(gen)
     let assets = try await photoLibraryService.fetchAssets(year: year, month: nil)
     try throwIfCancelledOrStale(gen)
     // Record this year's folder scope for the run-end empty-folder walk.

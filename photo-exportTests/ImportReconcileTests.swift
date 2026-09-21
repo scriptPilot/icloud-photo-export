@@ -185,6 +185,94 @@ struct ImportReconcileTests {
     #expect(summary == .zero)
   }
 
+  // MARK: - Scoped reconcile (export-run pre-plan sweep)
+
+  /// `year`/`month` filters limit which records are examined. A month-scoped
+  /// sweep must prune only that month's stale records — the export run that
+  /// passes the filter only ever re-creates files for its own scope.
+  @Test func timelineScopedReconcilePrunesOnlyTargetMonth() async throws {
+    let (root, cleanup) = makeRoot()
+    defer { cleanup() }
+    let storeRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Store-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: storeRoot) }
+    let store = ExportRecordStore(baseDirectoryURL: storeRoot)
+    store.configure(for: "test")
+
+    store.markVariantExported(
+      assetId: "asset-march", variant: .original, year: 2025, month: 3,
+      relPath: "2025/03/", filename: "M.HEIC", exportedAt: Date())
+    store.markVariantExported(
+      assetId: "asset-april", variant: .original, year: 2025, month: 4,
+      relPath: "2025/04/", filename: "A.HEIC", exportedAt: Date())
+
+    let summary = await store.reconcileAgainstFilesystem(at: root, year: 2025, month: 3)
+
+    #expect(summary == ExportRecordStore.ReconcileSummary(prunedVariants: 1, prunedRecords: 1))
+    #expect(store.recordsById["asset-march"] == nil)
+    #expect(store.recordsById["asset-april"]?.variants[.original]?.status == .done)
+  }
+
+  /// Year scope: every month inside the year is probed, records in other
+  /// years are untouched even when their files are missing.
+  @Test func timelineScopedReconcilePrunesOnlyTargetYear() async throws {
+    let (root, cleanup) = makeRoot()
+    defer { cleanup() }
+    let storeRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("Store-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: storeRoot) }
+    let store = ExportRecordStore(baseDirectoryURL: storeRoot)
+    store.configure(for: "test")
+
+    store.markVariantExported(
+      assetId: "asset-2025", variant: .original, year: 2025, month: 3,
+      relPath: "2025/03/", filename: "A.HEIC", exportedAt: Date())
+    store.markVariantExported(
+      assetId: "asset-2024", variant: .original, year: 2024, month: 11,
+      relPath: "2024/11/", filename: "B.HEIC", exportedAt: Date())
+
+    let summary = await store.reconcileAgainstFilesystem(at: root, year: 2025)
+
+    #expect(summary == ExportRecordStore.ReconcileSummary(prunedVariants: 1, prunedRecords: 1))
+    #expect(store.recordsById["asset-2025"] == nil)
+    #expect(store.recordsById["asset-2024"]?.variants[.original]?.status == .done)
+  }
+
+  /// Placement scope: only the targeted placement's bodies are probed; the
+  /// sibling placement's stale records are left for its own run.
+  @Test func collectionScopedReconcilePrunesOnlyTargetPlacement() async throws {
+    let (root, cleanup) = makeRoot()
+    defer { cleanup() }
+    let storeRoot = FileManager.default.temporaryDirectory
+      .appendingPathComponent("CStore-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: storeRoot) }
+    let store = CollectionExportRecordStore(baseDirectoryURL: storeRoot)
+    store.configure(for: "test")
+
+    let italy = ExportPlacement(
+      kind: .album, id: "collections:album:abc:def",
+      displayName: "Italy", collectionLocalIdentifier: "album-1",
+      relativePath: "Collections/Albums/Italy/", createdAt: Date())
+    let spain = ExportPlacement(
+      kind: .album, id: "collections:album:ghi:jkl",
+      displayName: "Spain", collectionLocalIdentifier: "album-2",
+      relativePath: "Collections/Albums/Spain/", createdAt: Date())
+    store.upsertPlacement(italy)
+    store.upsertPlacement(spain)
+    store.markVariantExported(
+      assetId: "x1", placement: italy, variant: .original,
+      filename: "X.HEIC", exportedAt: Date())
+    store.markVariantExported(
+      assetId: "y1", placement: spain, variant: .original,
+      filename: "Y.HEIC", exportedAt: Date())
+
+    let summary = await store.reconcileAgainstFilesystem(at: root, placementId: italy.id)
+
+    #expect(summary == CollectionExportRecordStore.ReconcileSummary(prunedVariants: 1, prunedRecords: 1))
+    #expect(store.recordBodies[italy.id]?["x1"] == nil)
+    #expect(store.recordBodies[spain.id]?["y1"]?.variants["original"]?.status == .done)
+  }
+
   // MARK: - Collection unit tests
 
   @Test func collectionReconcilePrunesMissingDoneVariant() async throws {

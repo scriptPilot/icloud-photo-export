@@ -415,15 +415,25 @@ final class CollectionExportRecordStore: ObservableObject {
   /// placement metadata is gone (orphans) are pruned wholesale — they're
   /// unreconcilable garbage with no path to check.
   ///
-  /// Two-phase: snapshot on main, file checks off-main, mutations on main. Callers
-  /// must run this only when no export is active.
-  func reconcileAgainstFilesystem(at root: URL) async -> ReconcileSummary {
+  /// Scope: `placementId` filters which records are examined — `nil` means unbounded
+  /// (the import flow's full sweep). Used by `ExportManager` to reconcile just the
+  /// run's placement before planning, so a run never resurrects (or prunes)
+  /// deliberately-deleted files in other placements.
+  ///
+  /// Two-phase: snapshot on main, file checks off-main, mutations on main. The same
+  /// live-record re-check as the timeline store guards against a
+  /// concurrently-draining queue; the import flow's `!hasActiveExportWork` gate makes
+  /// those checks no-ops there.
+  func reconcileAgainstFilesystem(
+    at root: URL, placementId: String? = nil
+  ) async -> ReconcileSummary {
     guard state == .ready else { return .zero }
 
     struct Probe: Sendable {
       let placementId: String
       let assetId: String
       let variantKey: String
+      let probedFilename: String?
       let path: String
       let isCorrupt: Bool
     }
@@ -432,10 +442,13 @@ final class CollectionExportRecordStore: ObservableObject {
 
     // Phase 1 (main): snapshot. Orphan-body keys (placementId not in `placements`)
     // are queued for direct deletion; everything else is probed.
-    for (placementId, byAsset) in recordBodies {
-      guard let placement = placements[placementId] else {
+    for (bodyPlacementId, byAsset) in recordBodies {
+      if let placementId, bodyPlacementId != placementId {
+        continue
+      }
+      guard let placement = placements[bodyPlacementId] else {
         for assetId in byAsset.keys {
-          orphanDeletes.append((placementId, assetId))
+          orphanDeletes.append((bodyPlacementId, assetId))
         }
         continue
       }
@@ -444,8 +457,8 @@ final class CollectionExportRecordStore: ObservableObject {
           guard let filename = vr.filename else {
             probes.append(
               Probe(
-                placementId: placementId, assetId: assetId, variantKey: variantKey,
-                path: "", isCorrupt: true))
+                placementId: bodyPlacementId, assetId: assetId, variantKey: variantKey,
+                probedFilename: nil, path: "", isCorrupt: true))
             continue
           }
           // Issue #38: per-variant subfolder. A standalone-video asset's variants
@@ -458,33 +471,38 @@ final class CollectionExportRecordStore: ObservableObject {
             .appendingPathComponent(filename).path
           probes.append(
             Probe(
-              placementId: placementId, assetId: assetId, variantKey: variantKey,
-              path: path, isCorrupt: false))
+              placementId: bodyPlacementId, assetId: assetId, variantKey: variantKey,
+              probedFilename: filename, path: path, isCorrupt: false))
         }
       }
     }
 
     // Phase 2 (off-main): file checks.
     let probesCopy = probes
-    let toPrune: [(placementId: String, assetId: String, variantKey: String)] = await Task.detached
-    {
+    let toPrune: [(
+      placementId: String, assetId: String, variantKey: String, probedFilename: String?
+    )] = await Task.detached {
       let fm = FileManager.default
-      var keys: [(placementId: String, assetId: String, variantKey: String)] = []
+      var keys: [(
+        placementId: String, assetId: String, variantKey: String, probedFilename: String?
+      )] = []
       for probe in probesCopy {
         if probe.isCorrupt {
-          keys.append((probe.placementId, probe.assetId, probe.variantKey))
+          keys.append((probe.placementId, probe.assetId, probe.variantKey, nil))
           continue
         }
         var isDir: ObjCBool = false
         let exists = fm.fileExists(atPath: probe.path, isDirectory: &isDir)
         if !exists || isDir.boolValue {
-          keys.append((probe.placementId, probe.assetId, probe.variantKey))
+          keys.append((probe.placementId, probe.assetId, probe.variantKey, probe.probedFilename))
         }
       }
       return keys
     }.value
 
     // Phase 3 (main): apply mutations. Orphan bodies first, then variant prunes.
+    // The live-record re-check on prunes guards against a concurrently-draining
+    // queue — same contract as the timeline store.
     var prunedVariants = 0
     var prunedRecords = 0
     for (placementId, assetId) in orphanDeletes {
@@ -492,8 +510,12 @@ final class CollectionExportRecordStore: ObservableObject {
       append(.deleteRecord(placementId: placementId, assetId: assetId))
       prunedRecords += 1
     }
-    for (placementId, assetId, variantKey) in toPrune {
+    for (placementId, assetId, variantKey, probedFilename) in toPrune {
       guard var body = recordBodies[placementId]?[assetId] else { continue }
+      guard let current = body.variants[variantKey],
+        current.status == .done,
+        current.filename == probedFilename
+      else { continue }
       guard body.variants.removeValue(forKey: variantKey) != nil else { continue }
       prunedVariants += 1
       if body.variants.isEmpty {

@@ -319,7 +319,7 @@ struct ExportManagerRunExportTests {
   /// `isExported` first). If the order were reversed, `skipForAutoSyncRetry` would
   /// observe the asset and increment `skippedCount`, inflating AutoSync's "ran but
   /// found nothing to do" counter for assets that were never going to be queued.
-  @Test func autoSyncRunFilterAlreadyExportedBeforeRetryCheck() async {
+  @Test func autoSyncRunFilterAlreadyExportedBeforeRetryCheck() async throws {
     let harness = makeHarness()
     defer { Task { await harness.cleanup() } }
 
@@ -328,11 +328,16 @@ struct ExportManagerRunExportTests {
     harness.photoLib.assetsByYearMonth["2025-7"] = [asset]
     harness.photoLib.yearCounts = [(year: 2025, count: 1)]
 
-    // Plant a `.done` original so `exportRecordStore.isExported` returns true.
+    // Plant a `.done` original — with its backing file, since the pre-plan
+    // missing-file reconcile would otherwise prune the record and queue the
+    // asset — so `exportRecordStore.isExported` returns true.
     harness.store.markVariantExported(
       assetId: asset.id, variant: .original,
       year: 2025, month: 7, relPath: "2025/07/",
       filename: "X.HEIC", exportedAt: Date())
+    let doneDir = harness.dest.rootURL.appendingPathComponent("2025/07", isDirectory: true)
+    try FileManager.default.createDirectory(at: doneDir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: doneDir.appendingPathComponent("X.HEIC"))
 
     // The eligibility closure must NOT be called for the already-done asset. Record
     // every call so the test can assert the gate never saw this asset id.
@@ -623,7 +628,7 @@ struct ExportManagerRunExportTests {
   /// Without per-variant `subfolder`, the shared `ExportRecord.relPath` would
   /// be overwritten to `2026/03/videos/` on the `.edited` write, mis-locating
   /// the `.original` variant on the next reconcile and silently pruning it.
-  @Test func videoLayoutMidLifeSynthesizerWritesEditedToSubfolderKeepsOriginalAtBase() async {
+  @Test func videoLayoutMidLifeSynthesizerWritesEditedToSubfolderKeepsOriginalAtBase() async throws {
     let harness = makeHarness()
     defer { Task { await harness.cleanup() } }
 
@@ -643,13 +648,18 @@ struct ExportManagerRunExportTests {
     ]
 
     // Pre-plant the `.original` variant as already exported under `.flat` —
-    // file conceptually at `2026/03/IMG_ML.MOV`, record carries `subfolder = nil`.
-    // The test does not need the file to exist on disk; the chokepoint only
-    // reads `existingVariants` from the store.
+    // file at `2026/03/IMG_ML.MOV`, record carries `subfolder = nil`. The
+    // backing file is planted for real: the pre-plan missing-file reconcile
+    // would otherwise prune the `.original` variant (its file is missing from
+    // the destination), and the pinned invariant "`.original` record survives
+    // the `.edited` write untouched" needs the file to exist.
     harness.store.markVariantExported(
       assetId: "video-mid-life", variant: .original,
       year: 2026, month: 3, relPath: "2026/03/",
       filename: "IMG_ML.MOV", exportedAt: Date(), subfolder: nil)
+    let flatDir = harness.dest.rootURL.appendingPathComponent("2026/03", isDirectory: true)
+    try FileManager.default.createDirectory(at: flatDir, withIntermediateDirectories: true)
+    try Data("x".utf8).write(to: flatDir.appendingPathComponent("IMG_ML.MOV"))
 
     // User flips the layout. The `.original` record stays as-is; only the
     // missing `.edited` will run this round.
