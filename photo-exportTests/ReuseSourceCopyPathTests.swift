@@ -192,4 +192,103 @@ struct ReuseSourceCopyPathTests {
     #expect(writer.writeCalls.count == writeCallsBefore + 1)
     #expect(fileSystem.copyCalls.isEmpty)
   }
+
+  // MARK: - Freshness gate (stale reuse source → PhotoKit)
+
+  /// User-reported regression: with "Replace updated files" on, a re-export
+  /// triggered by an edit change cloned the *previous* content from another
+  /// placement's `.done` record (the reuse path had no freshness check), so
+  /// the destination never saw the new bytes — the stale content then
+  /// circulated between placements with fresh `exportDate`s on every record.
+  /// A source recorded before the asset's current modification date must be
+  /// rejected; the PhotoKit writer fetches the current bytes instead.
+  @Test func staleReuseSourceIsRejectedInFavorOfPhotoKit() async throws {
+    let (
+      manager, photoLib, dest, writer, fileSystem, _, _, storeRoot
+    ) = try makeManager()
+    defer { try? FileManager.default.removeItem(at: storeRoot); dest.cleanup() }
+
+    // Favorites export written at T0 with the *old* edit's bytes.
+    let exportedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let favoritesPlacement = ExportPlacement.favorites()
+    manager.collectionExportRecordStore.upsertPlacement(favoritesPlacement)
+    let favoritesDir = try dest.urlForRelativeDirectory(
+      "Collections/Favorites/", createIfNeeded: true)
+    let favoritesFile = favoritesDir.appendingPathComponent("IMG.jpg")
+    try Data("stale bytes".utf8).write(to: favoritesFile)
+    manager.collectionExportRecordStore.markVariantExported(
+      assetId: "re-edited", placement: favoritesPlacement, variant: .edited,
+      filename: "IMG.jpg", exportedAt: exportedAt)
+
+    // The user re-edited the photo in Photos after T0; the descriptor's
+    // modification date now postdates the favorites record.
+    let asset = AssetDescriptor(
+      id: "re-edited", creationDate: Date(timeIntervalSince1970: 1_700_000_000),
+      mediaType: .image, pixelWidth: 100, pixelHeight: 100, duration: 0,
+      hasAdjustments: true, modificationDate: exportedAt.addingTimeInterval(60))
+    photoLib.assetsByYearMonth["2025-6"] = [asset]
+    photoLib.resourcesByAssetId[asset.id] = [
+      ResourceDescriptor(type: .fullSizePhoto, originalFilename: "IMG.jpg")
+    ]
+
+    manager.startExportMonth(year: 2025, month: 6)
+    await manager.waitForQueueDrained()
+
+    // The stale favorites source was rejected → PhotoKit re-export ran.
+    #expect(writer.writeCalls.count == 1)
+    #expect(fileSystem.copyCalls.isEmpty, "got \(fileSystem.copyCalls)")
+
+    // The month file holds the fresh bytes, not the cloned stale ones.
+    let monthFile = dest.rootURL
+      .appendingPathComponent("2025/06/", isDirectory: true)
+      .appendingPathComponent("IMG.jpg")
+    #expect(
+      (try? Data(contentsOf: monthFile)) == Data("fake-content".utf8),
+      "the month export must fetch the current edit from PhotoKit, not clone a stale placement file"
+    )
+  }
+
+  /// A reuse source whose record is at least as new as the asset's
+  /// modification date is still preferred over a PhotoKit fetch — the gate
+  /// only rejects stale sources.
+  @Test func freshReuseSourceIsStillPreferred() async throws {
+    let (
+      manager, photoLib, dest, writer, fileSystem, _, _, storeRoot
+    ) = try makeManager()
+    defer { try? FileManager.default.removeItem(at: storeRoot); dest.cleanup() }
+
+    let exportedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let favoritesPlacement = ExportPlacement.favorites()
+    manager.collectionExportRecordStore.upsertPlacement(favoritesPlacement)
+    let favoritesDir = try dest.urlForRelativeDirectory(
+      "Collections/Favorites/", createIfNeeded: true)
+    try Data("current bytes".utf8).write(
+      to: favoritesDir.appendingPathComponent("IMG.HEIC"))
+    manager.collectionExportRecordStore.markVariantExported(
+      assetId: "shared-2", placement: favoritesPlacement, variant: .original,
+      filename: "IMG.HEIC", exportedAt: exportedAt)
+
+    // modificationDate == exportDate: the source is up to date for this
+    // asset, so cloning it is correct and cheap.
+    let asset = AssetDescriptor(
+      id: "shared-2", creationDate: Date(timeIntervalSince1970: 1_700_000_000),
+      mediaType: .image, pixelWidth: 100, pixelHeight: 100, duration: 0,
+      hasAdjustments: false, modificationDate: exportedAt)
+    photoLib.assetsByYearMonth["2025-7"] = [asset]
+    photoLib.resourcesByAssetId[asset.id] = [
+      ResourceDescriptor(type: .photo, originalFilename: "IMG.HEIC")
+    ]
+
+    let writeCallsBefore = writer.writeCalls.count
+    manager.startExportMonth(year: 2025, month: 7)
+    await manager.waitForQueueDrained()
+
+    #expect(writer.writeCalls.count == writeCallsBefore)
+    #expect(fileSystem.copyCalls.count == 1)
+    let timelineFile = dest.rootURL
+      .appendingPathComponent("2025/07/", isDirectory: true)
+      .appendingPathComponent("IMG.HEIC")
+    #expect(
+      (try? Data(contentsOf: timelineFile)) == Data("current bytes".utf8))
+  }
 }

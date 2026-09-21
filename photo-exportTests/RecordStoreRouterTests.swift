@@ -271,7 +271,8 @@ struct RecordStoreRouterTests {
     let alb = album("ALB")
     h.collection.upsertPlacement(alb)
     let reuse = h.router.findReuseSource(
-      assetId: "shared", variant: .original, currentPlacement: alb)
+      assetId: "shared", variant: .original, currentPlacement: alb,
+      notModifiedSince: nil)
     #expect(reuse?.filename == "X.HEIC")
     if case .timeline = reuse?.placement.kind {} else {
       Issue.record("Expected timeline placement; got \(String(describing: reuse?.placement))")
@@ -286,7 +287,8 @@ struct RecordStoreRouterTests {
       year: 2025, month: 7, relPath: "2025/07/",
       filename: "X.HEIC", exportedAt: Date())
     let reuse = h.router.findReuseSource(
-      assetId: "x", variant: .original, currentPlacement: timeline())
+      assetId: "x", variant: .original, currentPlacement: timeline(),
+      notModifiedSince: nil)
     #expect(reuse == nil, "timeline placement must not reuse from itself")
   }
 
@@ -299,7 +301,8 @@ struct RecordStoreRouterTests {
       assetId: "z", placement: alb, variant: .original,
       filename: "Z.HEIC", exportedAt: Date())
     let reuse = h.router.findReuseSource(
-      assetId: "z", variant: .original, currentPlacement: timeline())
+      assetId: "z", variant: .original, currentPlacement: timeline(),
+      notModifiedSince: nil)
     #expect(reuse?.filename == "Z.HEIC")
     #expect(reuse?.placement.kind == .album)
   }
@@ -313,7 +316,8 @@ struct RecordStoreRouterTests {
       assetId: "z", placement: alb, variant: .original,
       filename: "Z.HEIC", exportedAt: Date())
     let reuse = h.router.findReuseSource(
-      assetId: "z", variant: .original, currentPlacement: alb)
+      assetId: "z", variant: .original, currentPlacement: alb,
+      notModifiedSince: nil)
     #expect(reuse == nil, "current placement must be excluded from reuse search")
   }
 
@@ -321,7 +325,8 @@ struct RecordStoreRouterTests {
     let h = makeHarness()
     defer { h.cleanup() }
     #expect(h.router.findReuseSource(
-      assetId: "nothing", variant: .original, currentPlacement: timeline()) == nil)
+      assetId: "nothing", variant: .original, currentPlacement: timeline(),
+      notModifiedSince: nil) == nil)
   }
 
   @Test func findReuseSource_prefersTimelineOverCollection() {
@@ -342,7 +347,8 @@ struct RecordStoreRouterTests {
     let shared = sharedAlbum("share")
     h.collection.upsertPlacement(shared)
     let reuse = h.router.findReuseSource(
-      assetId: "z", variant: .original, currentPlacement: shared)
+      assetId: "z", variant: .original, currentPlacement: shared,
+      notModifiedSince: nil)
     #expect(reuse?.filename == "TL.HEIC", "timeline must be preferred over collection")
   }
 
@@ -373,11 +379,44 @@ struct RecordStoreRouterTests {
     h.collection.upsertPlacement(alb)
 
     let originalReuse = h.router.findReuseSource(
-      assetId: "split-asset", variant: .original, currentPlacement: alb)
+      assetId: "split-asset", variant: .original, currentPlacement: alb,
+      notModifiedSince: nil)
     #expect(originalReuse?.subfolder == nil)
 
     let editedReuse = h.router.findReuseSource(
-      assetId: "split-asset", variant: .edited, currentPlacement: alb)
+      assetId: "split-asset", variant: .edited, currentPlacement: alb,
+      notModifiedSince: nil)
     #expect(editedReuse?.subfolder == "videos")
+  }
+
+  // MARK: - Freshness gate
+
+  /// A candidate recorded *before* the asset's current modification date holds the
+  /// asset's previous content (e.g. an edit changed in Photos since the export);
+  /// cloning it would circulate stale bytes between placements (user-reported with
+  /// "Replace updated files" on). The lookup must reject it so the caller falls
+  /// back to PhotoKit.
+  @Test func findReuseSource_rejectsSourceRecordedBeforeModificationDate() {
+    let h = makeHarness()
+    defer { h.cleanup() }
+    let exportedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    h.timeline.markVariantExported(
+      assetId: "re-edited", variant: .edited,
+      year: 2025, month: 7, relPath: "2025/07/",
+      filename: "OLD.jpg", exportedAt: exportedAt)
+
+    let modified = exportedAt.addingTimeInterval(60)
+    let reuse = h.router.findReuseSource(
+      assetId: "re-edited", variant: .edited, currentPlacement: album("ALB"),
+      notModifiedSince: modified)
+    #expect(
+      reuse == nil,
+      "a reuse source older than the asset's modification date must be rejected")
+
+    // A source recorded *at* the modification date is current and acceptable.
+    let fresh = h.router.findReuseSource(
+      assetId: "re-edited", variant: .edited, currentPlacement: album("ALB"),
+      notModifiedSince: exportedAt)
+    #expect(fresh?.filename == "OLD.jpg")
   }
 }

@@ -295,17 +295,30 @@ final class RecordStoreRouter {
   /// prior `.done` write is acceptable as a source — there's no preference for timeline
   /// over collection beyond the deterministic search order.
   ///
+  /// **Freshness gate.** A candidate whose record predates the asset's current
+  /// `modificationDate` is rejected (`notModifiedSince == false`): the file it points at
+  /// holds the *previous* content — e.g. an edit that was since changed in Photos — and
+  /// cloning it would circulate stale bytes between placements while every record
+  /// claims a fresh `exportDate` (user-reported with the "Replace updated files" option
+  /// on). When the source is rejected or absent the caller falls through to PhotoKit,
+  /// which fetches the current bytes. `assetModificationDate == nil` (descriptor without
+  /// the field — tests, fakes) preserves the pre-gate behavior; a candidate with a `nil`
+  /// `exportDate` is treated as stale for a known modification date, mirroring
+  /// `ExportCompletionPolicy.isUpdatedAfterExport`'s conservatism for legacy records.
+  ///
   /// The returned `ReuseSource.subfolder` is read off the matched variant record (NOT
   /// asset-wide), so a mid-life-toggle asset with `.original` at bare path and `.edited`
   /// in `videos/` returns the per-variant truth.
   func findReuseSource(
-    assetId: String, variant: ExportVariant, currentPlacement: ExportPlacement
+    assetId: String, variant: ExportVariant, currentPlacement: ExportPlacement,
+    notModifiedSince modificationDate: Date?
   ) -> ReuseSource? {
     // 1) Timeline store (skip if we're currently writing to a timeline placement).
     if currentPlacement.kind != .timeline {
       if let record = timelineStore.exportInfo(assetId: assetId),
         let variantRec = record.variants[variant],
         variantRec.status == .done,
+        Self.isFreshSource(variantRec, assetModificationDate: modificationDate),
         let filename = variantRec.filename
       {
         let placement = ExportPlacement.timeline(year: record.year, month: record.month)
@@ -323,11 +336,24 @@ final class RecordStoreRouter {
         let assetBody = body[assetId],
         let variantRec = assetBody.variants[variant.rawValue],
         variantRec.status == .done,
+        Self.isFreshSource(variantRec, assetModificationDate: modificationDate),
         let filename = variantRec.filename
       else { continue }
       return ReuseSource(
         placement: placement, filename: filename, subfolder: variantRec.subfolder)
     }
     return nil
+  }
+
+  /// Freshness gate for a reuse-source candidate (see `findReuseSource`). `nil`
+  /// modification date preserves the pre-gate behavior; a known modification date
+  /// rejects candidates recorded before it (their file holds outdated bytes) and
+  /// candidates without a recorded `exportDate`.
+  nonisolated private static func isFreshSource(
+    _ record: ExportVariantRecord, assetModificationDate modificationDate: Date?
+  ) -> Bool {
+    guard let modificationDate else { return true }
+    guard let exportDate = record.exportDate else { return false }
+    return exportDate >= modificationDate
   }
 }

@@ -236,7 +236,8 @@ final class VariantExporter {
     // file, all other placements just clone it.
     var didCopyFromReuseSource = false
     if let reuse = recordStoreRouter.findReuseSource(
-      assetId: descriptor.id, variant: variant, currentPlacement: job.placement),
+      assetId: descriptor.id, variant: variant, currentPlacement: job.placement,
+      notModifiedSince: descriptor.modificationDate),
       let destinationRoot = exportDestination.selectedFolderURL
     {
       // Issue #38: the source file lives at the placement path plus the *source
